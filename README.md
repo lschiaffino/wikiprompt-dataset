@@ -66,7 +66,8 @@ The **prompt bodies themselves** are aggregated from public posts by their **ori
 ## Links
 
 - Site: https://www.wikiprompt.org
-- Dataset: https://www.wikiprompt.org/dataset
+- Dataset (live, metadata): https://www.wikiprompt.org/dataset
+- Hugging Face dataset (static snapshot): https://huggingface.co/datasets/lautaschiaffino/wikiprompt-prompts
 - API docs (on-site): https://www.wikiprompt.org/api-docs
 - MCP: https://mcp.wikiprompt.org/mcp
 - Skill: https://skill.wikiprompt.org
