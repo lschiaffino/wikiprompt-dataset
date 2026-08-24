@@ -13,8 +13,9 @@ Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
 Runs Sundays via GitHub Actions (see .github/workflows/benchmarks.yml);
 wikiprompt's daily import also snapshots on weekdays. Idempotent per day.
 """
-import json, os, io, math, datetime
+import json, os, io, re, csv, math, datetime
 import requests
+import yaml
 import pyarrow.parquet as pq
 
 SUPA = os.environ['SUPABASE_URL'].rstrip('/')
@@ -48,6 +49,74 @@ def upsert(records):
         else:
             print(f'  upsert chunk {i}: HTTP {r.status_code} {r.text[:120]}')
     return ok
+
+def fetch_livebench():
+    """LiveBench: table_{release}.csv; releases baked into the JS bundle."""
+    home = requests.get('https://livebench.ai/', timeout=30).text
+    m = re.search(r'src="(\./static/js/main[^"]+\.js)"', home)
+    if not m: return []
+    bundle = requests.get('https://livebench.ai/' + m.group(1).lstrip('./'), timeout=60).text
+    dates = sorted(set(re.findall(r'"(20\d{2}-\d{2}-\d{2})"', bundle)), reverse=True)[:12]
+    for d in dates:
+        r = requests.get(f"https://livebench.ai/table_{d.replace('-', '_')}.csv", timeout=30)
+        if r.status_code != 200 or not r.text.startswith('model'): continue
+        rows = list(csv.DictReader(io.StringIO(r.text)))
+        scored = []
+        for row in rows:
+            vals = [float(v) for k, v in row.items() if k != 'model' and v not in ('', None)]
+            if vals: scored.append((row['model'], sum(vals) / len(vals)))
+        scored.sort(key=lambda x: -x[1])
+        return [{'source': 'livebench', 'category': 'livebench:overall', 'model_name': mo[:120],
+                 'organization': None, 'license': None, 'score': round(a, 2), 'score_lower': None,
+                 'score_upper': None, 'votes': None, 'rank': i + 1, 'snapshot_date': TODAY,
+                 'extra': {'release': d, 'metric': 'average of category scores (0-100)'}}
+                for i, (mo, a) in enumerate(scored)]
+    return []
+
+def fetch_benchlm():
+    d = requests.get('https://benchlm.ai/data/leaderboard.json', timeout=40).json()
+    recs = []
+    for r in d.get('items') or []:
+        try: score = float(r['displayScore']) if r.get('displayScore') not in (None, '', 'None') else None
+        except Exception: score = None
+        try: rank = int(r['rank']) if r.get('rank') not in (None, '', 'None') else None
+        except Exception: rank = None
+        name = str(r.get('model') or r.get('slug') or '')[:120]
+        if not name: continue
+        recs.append({'source': 'benchlm', 'category': 'benchlm:overall', 'model_name': name,
+                     'organization': (r.get('creator') or '')[:80] or None,
+                     'license': (r.get('sourceType') or '')[:80] or None,
+                     'score': score, 'score_lower': None, 'score_upper': None, 'votes': None,
+                     'rank': rank, 'snapshot_date': TODAY,
+                     'extra': {'context_window': r.get('contextWindow'), 'metric': 'BenchLM aggregated display score'}})
+    return recs
+
+def fetch_aider():
+    raw = requests.get('https://raw.githubusercontent.com/Aider-AI/aider/main/aider/website/_data/polyglot_leaderboard.yml', timeout=40).text
+    best = {}
+    for r in yaml.safe_load(raw) or []:
+        model = str(r.get('model') or '')[:120]
+        try: rate = float(r.get('pass_rate_2'))
+        except Exception: continue
+        if model and (model not in best or rate > best[model][0]):
+            best[model] = (rate, r.get('edit_format'), r.get('total_cost'))
+    ranked = sorted(best.items(), key=lambda kv: -kv[1][0])
+    return [{'source': 'aider', 'category': 'aider:polyglot', 'model_name': m, 'organization': None,
+             'license': None, 'score': rate, 'score_lower': None, 'score_upper': None, 'votes': None,
+             'rank': i + 1, 'snapshot_date': TODAY,
+             'extra': {'edit_format': fmt, 'total_cost_usd': cost, 'metric': 'polyglot pass rate 2 (%)'}}
+            for i, (m, (rate, fmt, cost)) in enumerate(ranked)]
+
+def extra_sources():
+    total = 0
+    for name, fn in (('livebench', fetch_livebench), ('benchlm', fetch_benchlm), ('aider', fetch_aider)):
+        try: recs = fn()
+        except Exception as e:
+            print(f'{name}: failed {e}'); continue
+        n = upsert(recs)
+        total += n
+        print(f'{name}: {len(recs)} -> {n}')
+    return total
 
 def main():
     total = 0
@@ -84,6 +153,8 @@ def main():
         n = upsert(list(best.values()))
         total += n
         print(f'lmarena/{cfg}: {len(rows)} rows -> {n}')
+
+    total += extra_sources()
 
     models = requests.get('https://openrouter.ai/api/v1/models', timeout=60).json().get('data', [])
     recs = []
