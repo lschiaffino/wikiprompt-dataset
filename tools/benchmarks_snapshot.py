@@ -107,9 +107,40 @@ def fetch_aider():
              'extra': {'edit_format': fmt, 'total_cost_usd': cost, 'metric': 'polyglot pass rate 2 (%)'}}
             for i, (m, (rate, fmt, cost)) in enumerate(ranked)]
 
+def fetch_artificialanalysis():
+    """Artificial Analysis API (AA_API_KEY secret; free tier with attribution).
+    Intelligence/coding/math indices + speed (tokens/s) + latency (TTFT)."""
+    key = os.environ.get('AA_API_KEY')
+    if not key: 
+        print('artificialanalysis: no AA_API_KEY, skipping'); return []
+    data = requests.get('https://artificialanalysis.ai/api/v2/data/llms/models',
+                        headers={'x-api-key': key}, timeout=60).json().get('data') or []
+    scored = []
+    for m in data:
+        ev = m.get('evaluations') or {}
+        idx = ev.get('artificial_analysis_intelligence_index')
+        if idx is None: continue
+        scored.append((m, float(idx)))
+    scored.sort(key=lambda x: -x[1])
+    recs = []
+    for i, (m, idx) in enumerate(scored):
+        ev = m.get('evaluations') or {}
+        pr = m.get('pricing') or {}
+        recs.append({'source': 'artificialanalysis', 'category': 'aa:intelligence',
+                     'model_name': str(m.get('name') or '')[:120],
+                     'organization': ((m.get('model_creator') or {}).get('name') or '')[:80] or None,
+                     'license': None, 'score': round(idx, 1), 'score_lower': None,
+                     'score_upper': None, 'votes': None, 'rank': i + 1, 'snapshot_date': TODAY,
+                     'extra': {'tokens_per_second': m.get('median_output_tokens_per_second'),
+                               'ttft_seconds': m.get('median_time_to_first_token_seconds'),
+                               'price_1m_blended': pr.get('price_1m_blended_3_to_1'),
+                               'metric': 'Artificial Analysis Intelligence Index',
+                               'attribution': 'Data by artificialanalysis.ai'}})
+    return [r for r in recs if r['model_name']]
+
 def extra_sources():
     total = 0
-    for name, fn in (('livebench', fetch_livebench), ('benchlm', fetch_benchlm), ('aider', fetch_aider)):
+    for name, fn in (('livebench', fetch_livebench), ('benchlm', fetch_benchlm), ('aider', fetch_aider), ('artificialanalysis', fetch_artificialanalysis)):
         try: recs = fn()
         except Exception as e:
             print(f'{name}: failed {e}'); continue
